@@ -15,6 +15,10 @@ local buttons={}
 local button_presses={}
 
 -- a dictionary of entity classes that can be spawned via spawn_entity
+-- todo: slide slowly decreases to a stop
+-- todo: momentum is gained from repeated slide-jumping and wall-jumping
+-- todo: leap_velocity properly accounts for leaping into an object
+-- todo: slide frames retain when falling through air
 local entity_classes={
 	slime={
 		width=10,
@@ -33,6 +37,8 @@ local entity_classes={
 		jumpable_surface_buffer_frames=0,
 		jump_disabled_frames=0,
 		stick_disabled_frames=0,
+		slide_frames=0,
+		has_slid_this_frame=false,
 		-- sliding_platform=nil,
 		init=function(self)
 			-- initialize object to keep track of inputs
@@ -60,6 +66,11 @@ local entity_classes={
 			-- gravity accelerates the slime downwards
 			if not self.stuck_platform then
 				self.vy+=0.25
+			end
+			-- the slime slows to a stop when sliding
+			if self.slide_frames>6 and self.has_slid_this_frame then
+				local base_vx=self.jumpable_surface and self.jumpable_surface.vx or 0
+				self.vx=base_vx+0.92*(self.vx-base_vx)
 			end
 			-- check for jumps
 			if self.jump_disabled_frames<=0 and (self.jumpable_surface_buffer_frames>0 or self.has_double_jump) then
@@ -95,7 +106,16 @@ local entity_classes={
 			-- apply the velocity
 			self.slide_platform=nil
 			self.collision_padding=ternary(self.stick_disabled_frames>0,0,0.5)
+			self.has_slid_this_frame=false
 			self:apply_velocity()
+			-- keep track of slide time
+			if self.has_slid_this_frame then
+				increment_counter_prop(self,"slide_frames")
+			end
+			-- the slime sticks if it slows to a stop
+			if not self.stuck_platform and self.jumpable_surface_dir=="down" and abs(self.vx-self.jumpable_surface.vx)<0.1 then
+				self:stick(self.jumpable_surface,self.jumpable_surface_dir)
+			end
 		end,
 		draw=function(self)
 			if self.stuck_platform then
@@ -105,15 +125,16 @@ local entity_classes={
 			else
 				self:draw_outline(0)
 			end
+			print(self.slide_frames,self.x,self.y-10,0)
 		end,
 		on_collide=function(self,dir,other)
 			self:handle_collision(dir,other)
 			-- slide across the platform
 			if self.stick_disabled_frames>0 or (self.jump_dir=="left" and buttons[0]) or (self.jump_dir=="right" and buttons[1]) or (self.jump_dir=="up" and buttons[2] and dir!="up") then
 				self:slide(other,dir)
-				-- todo otherwise update jump_vx and jump_vy
+				-- todo: update jump_vx and jump_vy
 			-- stick to the platform
-			else
+			elseif not self.stuck_platform or other==self.stuck_platform or (dir=="down" and self.stuck_dir!="down") then
 				self:stick(other,dir)
 			end
 		end,
@@ -121,6 +142,7 @@ local entity_classes={
 			if dir=="down" then
 				self.has_double_jump=true
 				self:set_jumpable_surface(platform,dir)
+				self.has_slid_this_frame=true
 			end
 		end,
 		stick=function(self,platform,dir)
@@ -132,6 +154,7 @@ local entity_classes={
 			self.stuck_platform=platform
 			self.vx=platform.vx
 			self.vy=platform.vy
+			self.slide_frames=0
 		end,
 		unstick=function(self)
 			self.stuck_dir=nil
@@ -140,6 +163,7 @@ local entity_classes={
 			self.jumpable_surface_dir=nil
 			self.jumpable_surface_buffer_frames=0
 			self.stick_disabled_frames=2
+			self.slide_frames=0
 		end,
 		jump=function(self,dir)
 			-- jump off of a surface
@@ -155,6 +179,7 @@ local entity_classes={
 			end
 			self.jump_dir=dir
 			self.jump_disabled_frames=3
+			self.slide_frames=0
 			-- change velocity
 			if dir=="left" then
 				self.vx=self.jump_vx-2
@@ -177,9 +202,11 @@ local entity_classes={
 			end
 		end,
 		set_jumpable_surface=function(self,platform,dir)
-			self.jumpable_surface=platform
-			self.jumpable_surface_dir=dir
-			self.jumpable_surface_buffer_frames=3
+			if self.jumpable_surface_buffer_frames<3 or dir=="down" then
+				self.jumpable_surface=platform
+				self.jumpable_surface_dir=dir
+				self.jumpable_surface_buffer_frames=3
+			end
 		end
 	},
 	block={
@@ -349,6 +376,14 @@ end
 -- returns the second argument if condition is truthy, otherwise returns the third argument
 function ternary(condition,if_true,if_false)
 	return condition and if_true or if_false
+end
+
+function increment_counter(n)
+	return ternary(n>32000,2000,n+1)
+end
+
+function increment_counter_prop(obj,key)
+	obj[key]=increment_counter(obj[key])
 end
 
 function decrement_counter(n)
