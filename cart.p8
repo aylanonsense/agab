@@ -11,6 +11,8 @@ platform channels:
 function noop() end
 
 local entities
+local buttons={}
+local button_presses={}
 
 -- a dictionary of entity classes that can be spawned via spawn_entity
 local entity_classes={
@@ -18,28 +20,63 @@ local entity_classes={
 		width=15,
 		height=12,
 		collision_channel=1, -- blocks
+		leap_dir=nil,
+		stuck_dir=nil,
+		stuck_platform=nil,
+		sliding_platform=nil,
 		update=function(self)
-			-- move left
-			if btn(0) then
-				self.vx-=0.1
+			-- leap left
+			if (button_presses[0] and self.stuck_platform and self.stuck_dir!="left") or (buttons[0] and self.sliding_platform and self.leap_dir!="left") then
+				self:stick(self.sliding_platform or self.stuck_platform)
+				self:leap("left")
 			end
-			-- move right
-			if btn(1) then
-				self.vx+=0.1
+			-- leap right
+			if (button_presses[1] and self.stuck_platform and self.stuck_dir!="right") or (buttons[1] and self.sliding_platform and self.leap_dir!="right") then
+				self:stick(self.sliding_platform or self.stuck_platform)
+				self:leap("right")
 			end
-			-- move up
-			if btn(2) then
-				self.vy-=0.1
-			end
-			-- move down
-			if btn(3) then
-				self.vy+=0.1
+			if self.stuck_platform then
+				self.vx=self.stuck_platform.vx
+				self.vy=self.stuck_platform.vy
+			else
+				-- apply gravity
+				self.vy+=0.25
+				if self.sliding_platform then
+					self.vx*=0.95 -- todo slide based on platform's velocity
+				end
 			end
 			-- apply the velocity
+			self.sliding_platform=nil
 			self:apply_velocity()
 		end,
 		draw=function(self)
 			self:draw_outline(0)
+			-- print(self.stuck_dir,self.x+0.5,self.y-5.5,0)
+		end,
+		on_collide=function(self,dir,other)
+			self:handle_collision(dir,other)
+			-- stick to the platform
+			if not self.leap_dir or dir=="left" or dir=="right" or (self.leap_dir=="left" and not buttons[0]) or (self.leap_dir=="right" and not buttons[1]) then
+				self:stick(other,dir)
+			elseif dir=="down" then
+				self.sliding_platform=other
+				-- self.leap_dir=nil
+			end
+		end,
+		stick=function(self,platform,dir)
+			self.leap_dir=nil
+			self.stuck_dir=dir
+			self.stuck_platform=platform
+			self.vx=platform.vx
+			self.vy=platform.vy
+		end,
+		leap=function(self,dir)
+			self.vx+=ternary(dir=="left",-2,2)
+			self.vy-=3
+			self.leap_dir=dir
+			self.stuck_dir=nil
+			self.stuck_platform=nil
+			self.sliding_platform=nil
 		end
 	},
 	block={
@@ -53,12 +90,22 @@ local entity_classes={
 function _init()
 	entities={}
 	-- spawn initial entities
-	spawn_entity("slime",50,50)
-	spawn_entity("block",50,80)
-	spawn_entity("block",58,80)
+	spawn_entity("slime",50,65)
+	spawn_entity("block",1,80)
+	spawn_entity("block",119,80)
+	spawn_entity("block",1,90,{
+		width=126
+	})
 end
 
 function _update()
+	-- keep better track of button presses
+	--  (because btnp repeats presses when holding)
+	local i
+	for i=0,5 do
+		button_presses[i]=btn(i) and not buttons[i]
+		buttons[i]=btn(i)
+	end
 	-- update all the entities
 	local entity
 	for entity in all(entities) do
@@ -187,4 +234,9 @@ function objects_colliding(obj1,obj2)
 	elseif rects_overlapping(x1+p1,y1,w1-2*p1,h1/2,x2,y2,w2,h2) then
 		return "up"
 	end
+end
+
+-- returns the second argument if condition is truthy, otherwise returns the third argument
+function ternary(condition,if_true,if_false)
+	return condition and if_true or if_false
 end
