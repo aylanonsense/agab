@@ -15,7 +15,7 @@ local buttons={}
 local button_presses={}
 
 -- a dictionary of entity classes that can be spawned via spawn_entity
--- todo: leap_velocity properly accounts for leaping into an object
+-- todo: tap up to stick into the underside of a short ceiling
 local entity_classes={
 	slime={
 		width=10,
@@ -24,8 +24,6 @@ local entity_classes={
 		collision_indent=2,
 		input_buffer_amount=3,
 		jump_dir=nil,
-		airborne_vx=0,
-		airborne_vy=0,
 		stuck_dir=nil,
 		stuck_platform=nil,
 		has_double_jump=false,
@@ -79,7 +77,7 @@ local entity_classes={
 			end
 			-- gravity accelerates the slime downwards
 			if not self.stuck_platform then
-				self.vy=min(self.vy+0.25,ternary(self.is_bouncing,5,3.5))
+				self.vy+=0.25
 			end
 			-- the slime slows to a stop when sliding
 			if self.slide_frames>6 and self.has_slid_this_frame then
@@ -89,9 +87,13 @@ local entity_classes={
 			-- check for bounce
 			if not self.is_bouncing and self.vy>-1 and not self.jumpable_surface and not self.stuck_platform and button_presses[3] then
 				self.is_bouncing=true
-				self.vy=5 -- self.airborne_vy+5
+				self.vy=3.75
 				self.bounces=0
 				self:recalc_bounce_energy()
+			end
+			if self.stuck_platform then
+				self.vx=self.stuck_platform.vx
+				self.vy=self.stuck_platform.vy
 			end
 			-- check for jumps
 			if not self.is_bouncing and self.jump_disabled_frames<=0 and (self.jumpable_surface_buffer_frames>0 or self.has_double_jump) then
@@ -124,15 +126,18 @@ local entity_classes={
 					self:jump("up")
 				end
 			end
-			if self.stuck_platform then
-				self.airborne_vx=self.vx
-				self.airborne_vy=self.vy
-			end
+			-- clamp velocity
+			self.velocity_x=mid(-3.75,self.velocity_x,3.75)
+			self.velocity_y=mid(-3.75,self.velocity_y,3.75)
 			-- apply the velocity
 			self.slide_platform=nil
-			self.collision_padding=ternary(self.stick_disabled_frames>0,0,0.5)
+			self.collision_padding=ternary(self.stick_disabled_frames>0,0,1.5)
 			self.has_slid_this_frame=false
 			self:apply_velocity(self.is_bouncing)
+			-- the slime might get unstuck from the platform
+			if self.stuck_platform and not self:check_for_collision(self.stuck_platform) then
+				self:unstick()
+			end
 			-- keep track of slide time
 			if self.has_slid_this_frame then
 				increment_counter_prop(self,"slide_frames")
@@ -150,6 +155,9 @@ local entity_classes={
 			else
 				self:draw_outline(0)
 			end
+			if self.stuck_platform then
+				self.stuck_platform:draw_outline(8)
+			end
 		end,
 		on_collide=function(self,dir,other)
 			local vx=self.vx
@@ -160,7 +168,6 @@ local entity_classes={
 			-- slide across the platform
 			elseif self.stick_disabled_frames>0 or (self.jump_dir=="left" and buttons[0]) or (self.jump_dir=="right" and buttons[1]) or (self.jump_dir=="up" and buttons[2] and dir!="up") then
 				self:slide(other,dir)
-				-- todo: update airborne_vx and airborne_vy
 			-- stick to the platform
 			elseif not self.stuck_platform or other==self.stuck_platform or (dir=="down" and self.stuck_dir!="down") then
 				self:stick(other,dir)
@@ -168,7 +175,7 @@ local entity_classes={
 		end,
 		bounce=function(self,platform,dir,vx)
 			increment_counter_prop(self,"bounces")
-			local vy=min(5,sqrt(2*(self.bounce_energy-0.25*(128-self.y))))
+			local vy=min(3.75,sqrt(2*(self.bounce_energy-0.25*(128-self.y))))
 			if dir=="down" then
 				self.has_double_jump=true
 				self.vy=platform.vy-vy
@@ -183,7 +190,7 @@ local entity_classes={
 			end
 		end,
 		recalc_bounce_energy=function(self)
-			self.bounce_energy=self.vx*self.vx/2+0.25*(128-self.y)
+			self.bounce_energy=self.vy*self.vy/2+0.25*(128-self.y)
 		end,
 		slide=function(self,platform,dir)
 			if dir=="down" then
@@ -241,9 +248,6 @@ local entity_classes={
 						self.momentum_level=1
 					end
 				end
-				-- then jump off of the surface
-				self.airborne_vx=self.vx--+0.1*momentum_vx*ternary(self.momentum_dir=="left",-1,1)
-				self.airborne_vy=self.vy
 			-- exhaust double jump to jump in mid-air
 			else
 				self.has_double_jump=false
@@ -258,27 +262,28 @@ local entity_classes={
 			self.slide_frames=0
 			-- change velocity
 			if dir=="left" then
-				self.vx=self.airborne_vx-2
+				self.vx=-2
 				if self.jumpable_surface_dir=="up" then
-					self.vy=self.airborne_vy
+					self.vy=0
 				else
-					self.vy=self.airborne_vy-2.5
+					self.vy=-2.5
 				end
 			elseif dir=="right" then
-				self.vx=self.airborne_vx+2
+				self.vx=2
 				if self.jumpable_surface_dir=="up" then
-					self.vy=self.airborne_vy
+					self.vy=0
 				else
-					self.vy=self.airborne_vy-2.5
+					self.vy=-2.5
 				end
 			elseif dir=="up" then
-				self.vx=self.airborne_vx
 				if self.stuck_dir=="left" then
-					self.vx+=0.5
+					self.vx=0.5
 				elseif self.stuck_dir=="right" then
-					self.vx-=0.5
+					self.vx=-0.5
+				else
+					self.vx=0
 				end
-				self.vy=self.airborne_vy-3.5
+				self.vy=-3.5
 			end
 			-- and the slime is no longer stuck to any platforms
 			if self.jumpable_surface_buffer_frames>0 then
@@ -304,11 +309,19 @@ local entity_classes={
 function _init()
 	entities={}
 	-- spawn initial entities
-	spawn_entity("slime",30,85)
 	spawn_entity("block",1,20,{ height=60 })
 	spawn_entity("block",119,20,{ height=60 })
 	spawn_entity("block",1,90,{ width=126 })
 	spawn_entity("block",30,68,{ width=60 })
+	spawn_entity("block",20,48,{
+		width=16,
+		height=16,
+		update=function(self)
+			self.vx=ternary(self.frames_alive%200<100,0.5,-0.5)
+			self:apply_velocity()
+		end
+	})
+	spawn_entity("slime",30,85)
 end
 
 -- local skip_frames=0
@@ -325,6 +338,7 @@ function _update()
 	-- update all the entities
 	local entity
 	for entity in all(entities) do
+		increment_counter_prop(entity,"frames_alive")
 		entity:update()
 	end
 end
@@ -345,6 +359,7 @@ function spawn_entity(class_name,x,y,args)
 	-- create a default entity
 	local entity={
 		class_name=class_name,
+		frames_alive=0,
 		x=x,
 		y=y,
 		vx=0,
@@ -382,16 +397,19 @@ function spawn_entity(class_name,x,y,args)
 			local entity
 			for entity in all(entities) do
 				-- check if they have matching collision channels
-				if entity!=self and band(self.collision_channel,entity.platform_channel)>0 then
-					local collision_dir=objects_colliding(self,entity)
-					if collision_dir then
-						-- they are colliding!
-						self:on_collide(collision_dir,entity)
-						found_collision=true
-					end
+				local collision_dir=self:check_for_collision(entity)
+				if collision_dir then
+					-- they are colliding!
+					self:on_collide(collision_dir,entity)
+					found_collision=true
 				end
 			end
 			return found_collision
+		end,
+		check_for_collision=function(self,other)
+			if other!=self and band(self.collision_channel,other.platform_channel)>0 then
+				return objects_colliding(self,other)
+			end
 		end,
 		on_collide=function(self,dir,other)
 			-- just handle the collision by default
