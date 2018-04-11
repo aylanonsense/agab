@@ -15,10 +15,8 @@ local buttons={}
 local button_presses={}
 
 -- a dictionary of entity classes that can be spawned via spawn_entity
--- todo: slide slowly decreases to a stop
--- todo: momentum is gained from repeated slide-jumping and wall-jumping
 -- todo: leap_velocity properly accounts for leaping into an object
--- todo: slide frames retain when falling through air
+-- todo: bouncing down hard
 local entity_classes={
 	slime={
 		width=10,
@@ -39,6 +37,9 @@ local entity_classes={
 		stick_disabled_frames=0,
 		slide_frames=0,
 		has_slid_this_frame=false,
+		momentum_level=0,
+		momentum_dir=nil,
+		momentum_reset_frames=0,
 		-- sliding_platform=nil,
 		init=function(self)
 			-- initialize object to keep track of inputs
@@ -55,6 +56,13 @@ local entity_classes={
 			end
 			decrement_counter_prop(self,"jump_disabled_frames")
 			decrement_counter_prop(self,"stick_disabled_frames")
+			-- maintain momentum so long as the slime doesn't stick to anything for too long
+			if not self.stuck_platform then
+				self.momentum_reset_frames=7
+			elseif decrement_counter_prop(self,"momentum_reset_frames") then
+				self.momentum_level=0
+				self.momentum_dir=nil
+			end
 			-- keep track of inputs
 			local i
 			for i=0,5 do
@@ -125,7 +133,8 @@ local entity_classes={
 			else
 				self:draw_outline(0)
 			end
-			print(self.slide_frames,self.x,self.y-10,0)
+			print(self.momentum_dir,self.x,self.y-10,0)
+			print(self.momentum_level,self.x,self.y-20,0)
 		end,
 		on_collide=function(self,dir,other)
 			self:handle_collision(dir,other)
@@ -166,27 +175,64 @@ local entity_classes={
 			self.slide_frames=0
 		end,
 		jump=function(self,dir)
+			local momentum_vx=self.momentum_level
 			-- jump off of a surface
 			if self.jumpable_surface_buffer_frames>0 then
+				-- continue gaining momentum
+				if dir==self.momentum_dir then
+					increment_counter_prop(self,"momentum_level")
+				end
 				-- stick to it momentarily (in case we were sliding)
 				self:stick(self.jumpable_surface,self.jumpable_surface_dir)
-				-- then jump off of it
-				self.jump_vx=self.vx
+				-- switch directions when jumping up off of walls
+				if dir=="up" then
+					if self.jumpable_surface_dir=="left" then
+						increment_counter_prop(self,"momentum_level")
+						self.momentum_dir="right"
+					elseif self.jumpable_surface_dir=="right" then
+						increment_counter_prop(self,"momentum_level")
+						self.momentum_dir="left"
+					end
+				-- begin gaining momentum
+				elseif dir!=self.momentum_dir then
+					self.momentum_dir=dir
+					if self.jumpable_surface_dir=="left" or self.jumpable_surface_dir=="right" then
+						increment_counter_prop(self,"momentum_level")
+					else
+						momentum_vx=0
+						self.momentum_level=1
+					end
+				end
+				-- then jump off of the surface
+				self.jump_vx=self.vx--+0.1*momentum_vx*ternary(self.momentum_dir=="left",-1,1)
 				self.jump_vy=self.vy
 			-- exhaust double jump to jump in mid-air
 			else
 				self.has_double_jump=false
+				if (dir=="left" or dir=="right") and self.momentum_dir!=dir then
+					self.momentum_dir=dir
+					self.momentum_level=1
+				end
 			end
+			-- set jump vars
 			self.jump_dir=dir
 			self.jump_disabled_frames=3
 			self.slide_frames=0
 			-- change velocity
 			if dir=="left" then
 				self.vx=self.jump_vx-2
-				self.vy=self.jump_vy-2.5
+				if self.jumpable_surface_dir=="up" then
+					self.vy=self.jump_vy
+				else
+					self.vy=self.jump_vy-2.5
+				end
 			elseif dir=="right" then
 				self.vx=self.jump_vx+2
-				self.vy=self.jump_vy-2.5
+				if self.jumpable_surface_dir=="up" then
+					self.vy=self.jump_vy
+				else
+					self.vy=self.jump_vy-2.5
+				end
 			elseif dir=="up" then
 				self.vx=self.jump_vx
 				if self.stuck_dir=="left" then
