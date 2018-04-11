@@ -17,66 +17,169 @@ local button_presses={}
 -- a dictionary of entity classes that can be spawned via spawn_entity
 local entity_classes={
 	slime={
-		width=15,
-		height=12,
+		width=10,
+		height=8,
 		collision_channel=1, -- blocks
-		leap_dir=nil,
+		collision_indent=2,
+		input_buffer_amount=3,
+		jump_dir=nil,
+		jump_vx=nil,
+		jump_vy=nil,
 		stuck_dir=nil,
 		stuck_platform=nil,
-		sliding_platform=nil,
+		has_double_jump=false,
+		jumpable_surface=nil,
+		jumpable_surface_dir=nil,
+		jumpable_surface_buffer_frames=0,
+		jump_disabled_frames=0,
+		stick_disabled_frames=0,
+		-- sliding_platform=nil,
+		init=function(self)
+			-- initialize object to keep track of inputs
+			self.buffered_presses={}
+			local i
+			for i=0,5 do
+				self.buffered_presses[i]=0
+			end
+		end,
 		update=function(self)
-			-- leap left
-			if (button_presses[0] and self.stuck_platform and self.stuck_dir!="left") or (buttons[0] and self.sliding_platform and self.leap_dir!="left") then
-				self:stick(self.sliding_platform or self.stuck_platform)
-				self:leap("left")
+			if decrement_counter_prop(self,"jumpable_surface_buffer_frames") then
+				self.jumpable_surface=nil
+				self.jumpable_surface_dir=nil
 			end
-			-- leap right
-			if (button_presses[1] and self.stuck_platform and self.stuck_dir!="right") or (buttons[1] and self.sliding_platform and self.leap_dir!="right") then
-				self:stick(self.sliding_platform or self.stuck_platform)
-				self:leap("right")
+			decrement_counter_prop(self,"jump_disabled_frames")
+			decrement_counter_prop(self,"stick_disabled_frames")
+			-- keep track of inputs
+			local i
+			for i=0,5 do
+				self.buffered_presses[i]=decrement_counter(self.buffered_presses[i])
+				if button_presses[i] then
+					self.buffered_presses[i]=self.input_buffer_amount
+				end
 			end
-			if self.stuck_platform then
-				self.vx=self.stuck_platform.vx
-				self.vy=self.stuck_platform.vy
-			else
-				-- apply gravity
+			-- gravity accelerates the slime downwards
+			if not self.stuck_platform then
 				self.vy+=0.25
-				if self.sliding_platform then
-					self.vx*=0.95 -- todo slide based on platform's velocity
+			end
+			-- check for jumps
+			if self.jump_disabled_frames<=0 and (self.jumpable_surface_buffer_frames>0 or self.has_double_jump) then
+				-- slide down right surface
+				if buttons[1] and self.stuck_dir=="right" then
+					self.buffered_presses[1]=0
+					self.jump_dir="right"
+					self:unstick()
+				-- slide down left surface
+				elseif buttons[0] and self.stuck_dir=="left" then
+					self.buffered_presses[0]=0
+					self.jump_dir="left"
+					self:unstick()
+				-- let go of top surface
+				elseif self.buffered_presses[2]>0 and self.stuck_dir=="up" then
+					self.buffered_presses[2]=0
+					self.jump_dir="up"
+					self:unstick()
+				-- jump right
+				elseif self.buffered_presses[1]>0 and self.stuck_dir!="right" then
+					self.buffered_presses[1]=0
+					self:jump("right")
+				-- jump left
+				elseif self.buffered_presses[0]>0 and self.stuck_dir!="left" then
+					self.buffered_presses[0]=0
+					self:jump("left")
+				-- jump up
+				elseif self.buffered_presses[2]>0 then
+					self.buffered_presses[2]=0
+					self:jump("up")
 				end
 			end
 			-- apply the velocity
-			self.sliding_platform=nil
+			self.slide_platform=nil
+			self.collision_padding=ternary(self.stick_disabled_frames>0,0,0.5)
 			self:apply_velocity()
 		end,
 		draw=function(self)
-			self:draw_outline(0)
-			-- print(self.stuck_dir,self.x+0.5,self.y-5.5,0)
+			if self.stuck_platform then
+				self:draw_outline(12)
+			elseif self.jumpable_surface_buffer_frames>0 then
+				self:draw_outline(11)
+			else
+				self:draw_outline(0)
+			end
 		end,
 		on_collide=function(self,dir,other)
 			self:handle_collision(dir,other)
+			-- slide across the platform
+			if self.stick_disabled_frames>0 or (self.jump_dir=="left" and buttons[0]) or (self.jump_dir=="right" and buttons[1]) or (self.jump_dir=="up" and buttons[2] and dir!="up") then
+				self:slide(other,dir)
+				-- todo otherwise update jump_vx and jump_vy
 			-- stick to the platform
-			if not self.leap_dir or dir=="left" or dir=="right" or (self.leap_dir=="left" and not buttons[0]) or (self.leap_dir=="right" and not buttons[1]) then
+			else
 				self:stick(other,dir)
-			elseif dir=="down" then
-				self.sliding_platform=other
-				-- self.leap_dir=nil
+			end
+		end,
+		slide=function(self,platform,dir)
+			if dir=="down" then
+				self.has_double_jump=true
+				self:set_jumpable_surface(platform,dir)
 			end
 		end,
 		stick=function(self,platform,dir)
-			self.leap_dir=nil
+			self.jump_dir=nil
+			self.has_double_jump=true
+			self:set_jumpable_surface(platform,dir)
+			self.jump_disabled_frames=0
 			self.stuck_dir=dir
 			self.stuck_platform=platform
 			self.vx=platform.vx
 			self.vy=platform.vy
 		end,
-		leap=function(self,dir)
-			self.vx+=ternary(dir=="left",-2,2)
-			self.vy-=3
-			self.leap_dir=dir
+		unstick=function(self)
 			self.stuck_dir=nil
 			self.stuck_platform=nil
-			self.sliding_platform=nil
+			self.jumpable_surface=nil
+			self.jumpable_surface_dir=nil
+			self.jumpable_surface_buffer_frames=0
+			self.stick_disabled_frames=2
+		end,
+		jump=function(self,dir)
+			-- jump off of a surface
+			if self.jumpable_surface_buffer_frames>0 then
+				-- stick to it momentarily (in case we were sliding)
+				self:stick(self.jumpable_surface,self.jumpable_surface_dir)
+				-- then jump off of it
+				self.jump_vx=self.vx
+				self.jump_vy=self.vy
+			-- exhaust double jump to jump in mid-air
+			else
+				self.has_double_jump=false
+			end
+			self.jump_dir=dir
+			self.jump_disabled_frames=3
+			-- change velocity
+			if dir=="left" then
+				self.vx=self.jump_vx-2
+				self.vy=self.jump_vy-2.5
+			elseif dir=="right" then
+				self.vx=self.jump_vx+2
+				self.vy=self.jump_vy-2.5
+			elseif dir=="up" then
+				self.vx=self.jump_vx
+				if self.stuck_dir=="left" then
+					self.vx+=0.5
+				elseif self.stuck_dir=="right" then
+					self.vx-=0.5
+				end
+				self.vy=self.jump_vy-3.5
+			end
+			-- and the slime is no longer stuck to any platforms
+			if self.jumpable_surface_buffer_frames>0 then
+				self:unstick()
+			end
+		end,
+		set_jumpable_surface=function(self,platform,dir)
+			self.jumpable_surface=platform
+			self.jumpable_surface_dir=dir
+			self.jumpable_surface_buffer_frames=3
 		end
 	},
 	block={
@@ -90,15 +193,17 @@ local entity_classes={
 function _init()
 	entities={}
 	-- spawn initial entities
-	spawn_entity("slime",50,65)
-	spawn_entity("block",1,80)
-	spawn_entity("block",119,80)
-	spawn_entity("block",1,90,{
-		width=126
-	})
+	spawn_entity("slime",30,85)
+	spawn_entity("block",1,20,{ height=60 })
+	spawn_entity("block",119,20,{ height=60 })
+	spawn_entity("block",1,90,{ width=126 })
+	spawn_entity("block",30,58,{ width=60 })
 end
 
+-- local skip_frames=0
 function _update()
+	-- skip_frames+=1
+	-- if skip_frames%10>0 then return end
 	-- keep better track of button presses
 	--  (because btnp repeats presses when holding)
 	local i
@@ -135,16 +240,19 @@ function spawn_entity(class_name,x,y,args)
 		vy=0,
 		width=8,
 		height=8,
-		physics_indent=1,
+		collision_indent=2,
+		collision_padding=0,
 		platform_channel=0,
 		collision_channel=0,
+		init=noop,
 		update=function(self)
 			self:apply_velocity()
 		end,
 		apply_velocity=function(self)
 			-- move in discrete steps
-			local max_move=self.physics_indent-0.1
-			local steps=max(1,max(abs(self.vx/max_move),abs(self.vy/max_move)))
+			local max_move_x=min(self.collision_indent,self.width-2*self.collision_indent)-0.1
+			local max_move_y=min(self.collision_indent,self.height-2*self.collision_indent)-0.1
+			local steps=max(1,ceil(max(abs(self.vx/max_move_x),abs(self.vy/max_move_y))))
 			local i
 			for i=1,steps do
 				-- apply velocity
@@ -206,6 +314,8 @@ function spawn_entity(class_name,x,y,args)
 	end
 	-- add it to the list of entities
 	add(entities,entity)
+	-- initialize the entitiy
+	entity:init()
 	-- return the new entity
 	return entity
 end
@@ -222,16 +332,16 @@ end
 
 -- check to see if obj1 is colliding into obj2, and if so in which direction
 function objects_colliding(obj1,obj2)
-	local x1,y1,w1,h1,p1=obj1.x,obj1.y,obj1.width,obj1.height,obj1.physics_indent
-	local x2,y2,w2,h2,p2=obj2.x,obj2.y,obj2.width,obj2.height,obj2.physics_indent
+	local x1,y1,w1,h1,i,p=obj1.x,obj1.y,obj1.width,obj1.height,obj1.collision_indent,obj1.collision_padding
+	local x2,y2,w2,h2=obj2.x,obj2.y,obj2.width,obj2.height
 	-- check hitboxes
-	if rects_overlapping(x1+p1,y1+h1/2,w1-2*p1,h1/2,x2,y2,w2,h2) then
+	if rects_overlapping(x1+i,y1+h1/2,w1-2*i,h1/2+p,x2,y2,w2,h2) then
 		return "down"
-	elseif rects_overlapping(x1+w1/2,y1+p1,w1/2,h1-2*p1,x2,y2,w2,h2) then
+	elseif rects_overlapping(x1+w1/2,y1+i,w1/2+p,h1-2*i,x2,y2,w2,h2) then
 		return "right"
-	elseif rects_overlapping(x1,y1+p1,w1/2,h1-2*p1,x2,y2,w2,h2) then
+	elseif rects_overlapping(x1-p,y1+i,w1/2+p,h1-2*i,x2,y2,w2,h2) then
 		return "left"
-	elseif rects_overlapping(x1+p1,y1,w1-2*p1,h1/2,x2,y2,w2,h2) then
+	elseif rects_overlapping(x1+i,y1-p,w1-2*i,h1/2+p,x2,y2,w2,h2) then
 		return "up"
 	end
 end
@@ -239,4 +349,14 @@ end
 -- returns the second argument if condition is truthy, otherwise returns the third argument
 function ternary(condition,if_true,if_false)
 	return condition and if_true or if_false
+end
+
+function decrement_counter(n)
+	return max(0,n-1)
+end
+
+function decrement_counter_prop(obj,key)
+	local initial_value=obj[key]
+	obj[key]=decrement_counter(initial_value)
+	return initial_value<=1
 end
